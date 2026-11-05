@@ -7,7 +7,7 @@ from pathlib import Path
 from ..llm.providers import ModelSettings
 from ..models import ServiceError
 from ..sources.website import parse_page
-from ..workflow import build_graph
+from ..workflow import create_review_session
 
 
 FOLDER = Path(__file__).resolve().parents[2] / "examples" / "scenarios"
@@ -68,14 +68,20 @@ def forbid_generation(*args, **kwargs):
     raise RuntimeError("Проверка сценария не должна вызывать модель.")
 
 
-def preview_scenario(scenario):
-    """Выполняет тот же граф до генерации: ключи, модель и доступ к интернету не нужны."""
+def create_preview_session(scenario):
+    """Сохраняет приостановленный общий граф, позволяя отвечать на конфликты без модели."""
     settings = ModelSettings("Локальный API", "preview", "http://localhost:1/v1")
-    graph = build_graph(settings, generator=forbid_generation, fetcher=scenario.fetch)
-    state = graph.invoke(
+    return create_review_session(settings, generator=forbid_generation, fetcher=scenario.fetch,
+                                 stop_before_generation=True)
+
+
+def preview_scenario(scenario, *, session=None):
+    """Выполняет тот же граф до генерации; переданная сессия позволяет продолжить выбор в UI."""
+    session = session or create_preview_session(scenario)
+    state = session["graph"].invoke(
         {"raw": scenario.raw, "enrich": scenario.enrich, "attempts": 0,
          "issues": [], "warnings": [], "error": "", "card": None},
-        interrupt_before=["generate"],
+        session["config"],
     )
     if state.get("status") == "pending":
         state["status"] = "preview"

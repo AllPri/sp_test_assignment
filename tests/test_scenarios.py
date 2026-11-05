@@ -7,10 +7,11 @@ from unittest.mock import Mock, patch
 
 from src.card.export import json_report, markdown
 from src.card.prompts import build_prompt
-from src.demo.scenarios import label_result, load_scenarios, preview_scenario
+from src.demo.scenarios import create_preview_session, label_result, load_scenarios, preview_scenario
+from src.card.review_guide import build_review_guide
 from src.llm.providers import ModelSettings
 from src.models import Product, ServiceError
-from src.workflow import build_graph
+from src.workflow import build_graph, resume_review
 
 
 @unittest.skipUnless(importlib.util.find_spec("langgraph"), "LangGraph не установлен")
@@ -45,6 +46,23 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(facts["specs"]["Интерфейс"], "RS-485")
         self.assertNotIn("24 В", build_prompt(facts))
         self.assertNotIn("220 В", build_prompt(facts))
+
+    def test_preview_resolves_conflict_and_stops_before_model(self):
+        """Решение применяется тем же узлом, после чего предпросмотр остаётся без вызова модели."""
+        scenario = self.scenarios["conflict"]
+        for choice, expected in ((0, "24 В"), (1, "220 В"), (-1, "данных нет")):
+            with self.subTest(choice=choice):
+                session = create_preview_session(scenario)
+                state = preview_scenario(scenario, session=session)
+                task = build_review_guide(state)[0]
+                state = resume_review(session, state, {"choices": {task["id"]: choice}})
+                self.assertEqual(state["status"], "preview")
+                self.assertEqual(state["facts"]["specs"]["Питание"], expected)
+                self.assertEqual(state["attempts"], 0)
+                self.assertIsNone(state["card"])
+                self.assertTrue(state["demonstration"]["preview"])
+                self.assertNotIn("Генерация", state["steps"])
+                self.assertEqual(session["graph"].get_state(session["config"]).next, ("generate",))
 
     def test_empty_and_wrong_variant(self):
         """Пустое поле получает пометку, чужое исполнение не добавляет свойства."""

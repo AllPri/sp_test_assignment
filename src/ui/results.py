@@ -47,12 +47,12 @@ def render_exports(state, key_prefix):
             st.download_button("Скачать JSON", data, "product-card.json", "application/json", key=key_prefix + "_json")
 
 
-def render_result(state, *, key_prefix="result", review_session=None, stale=False):
+def render_result(state, *, key_prefix="result", review_session=None, stale=False, on_resolved=None):
     """Не просит подтверждать готовую карточку; человек отвечает только на различающиеся значения."""
     st.divider()
     pending = state.get("status") == "awaiting_resolution"
     if pending:
-        render_review(state, review_session, stale=stale)
+        render_review(state, review_session, stale=stale, on_resolved=on_resolved)
     else:
         st.subheader("Результат")
         if state.get("status") == "draft":

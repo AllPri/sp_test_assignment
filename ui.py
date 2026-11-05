@@ -103,6 +103,9 @@ def input_editor():
 
 def render_editor(settings):
     """Применяет демонстрационный источник только при явном выборе сценария."""
+    notice = st.session_state.pop("scenario_notice", None)
+    if notice:
+        st.success(notice)
     scenario_id = st.session_state.get("demo_scenario_id")
     scenario = load_scenarios().get(scenario_id)
     if scenario:
@@ -145,7 +148,7 @@ def main():
     st.title("Черновик карточки товара")
     st.write("Передайте сведения о приборе, выберите модель и получите текст для проверки контент-менеджером.")
     settings = connection_settings()
-    editor, scenarios = st.tabs(["Карточка товара", "Примеры сценариев"])
+    editor, scenarios = st.tabs(["Карточка товара", "Примеры сценариев"], key="workspace_tab")
     with editor:
         render_editor(settings)
     with scenarios:

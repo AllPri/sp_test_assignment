@@ -113,11 +113,18 @@ class UITests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(app.session_state["scenario_preview"][1]["status"], "awaiting_resolution")
         self.assertEqual(app.session_state["scenario_preview"][1]["attempts"], 0)
+        app.session_state["workspace_tab"] = "Примеры сценариев"
+        app.session_state["review_session"] = {"old": True}
+        app.session_state["result_signature"] = "old"
         next(button for button in app.button if button.label == "Подставить в редактор").click()
         app.run(timeout=5)
         self.assertFalse(app.exception)
         self.assertIn("demo://conflict", app.text_area[0].value)
         self.assertEqual(app.session_state["demo_scenario_id"], "conflict")
+        self.assertEqual(app.session_state["workspace_tab"], "Карточка товара")
+        self.assertTrue(any("подставлен в редактор" in message.value for message in app.success))
+        self.assertNotIn("review_session", app.session_state)
+        self.assertNotIn("result_signature", app.session_state)
         self.assertTrue(any("ДЕМОНСТРАЦИОННЫЕ ДАННЫЕ" in warning.value for warning in app.warning))
         for expander in app.expander:
             if expander.label == "Источники и дообогащение":
@@ -128,6 +135,29 @@ class UITests(unittest.TestCase):
         self.assertNotIn("demo://", app.text_area[0].value)
         with self.assertRaises(KeyError):
             app.session_state["demo_scenario_id"]
+
+    def test_scenario_conflict_can_be_resolved_in_its_tab(self):
+        """Вкладка показывает варианты и сохраняет выбор в сценарии, не перезаписывая рабочий результат."""
+        from streamlit.testing.v1 import AppTest
+
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
+        original = {"status": "invalid_input", "error": "Предыдущий рабочий результат"}
+        app.session_state["result"] = original
+        next(box for box in app.selectbox if box.label == "Сценарий").select("conflict")
+        app.run(timeout=5)
+        next(button for button in app.button if button.label == "Проверить сценарий без модели").click()
+        app.run(timeout=5)
+        self.assertFalse(app.exception)
+        self.assertIsNone(app.radio[0].value)
+        app.radio[0].set_value(1)
+        next(button for button in app.button if button.label == "Применить выбор (без модели)").click()
+        app.run(timeout=5)
+        self.assertFalse(app.exception)
+        result = app.session_state["scenario_preview"][1]
+        self.assertEqual(result["facts"]["specs"]["Питание"], "220 В")
+        self.assertEqual(result["status"], "preview")
+        self.assertEqual(result["attempts"], 0)
+        self.assertEqual(app.session_state["result"], original)
 
     def test_clean_result_requires_no_operator(self):
         """Карточка без расхождений готова без имени, комментария и кнопки подтверждения."""

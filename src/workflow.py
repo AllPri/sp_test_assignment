@@ -115,7 +115,7 @@ def source_objects(state):
     return Product(**state["product"]), PageFacts(**state["page"]) if state.get("page") else None
 
 
-def build_graph(settings, *, generator=generate, fetcher=fetch_page, checkpointer=None):
+def build_graph(settings, *, generator=generate, fetcher=fetch_page, checkpointer=None, interrupt_before=None):
     """Создаёт настоящий LangGraph; без установленных зависимостей запуск невозможен."""
     from langgraph.graph import END, START, StateGraph
 
@@ -138,7 +138,7 @@ def build_graph(settings, *, generator=generate, fetcher=fetch_page, checkpointe
     graph.add_conditional_edges("check", after_check, {"retry": "generate", "stop": END})
     graph.add_conditional_edges("human_review", lambda s: "next" if s["facts"]["enough"] else "stop",
                                 {"next": "generate", "stop": END})
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=checkpointer, interrupt_before=interrupt_before)
 
 
 def after_check(state):
@@ -153,12 +153,14 @@ def after_prepare(state):
     return "next" if state["facts"]["enough"] else "stop"
 
 
-def create_review_session(settings, *, generator=generate, fetcher=fetch_page):
+def create_review_session(settings, *, generator=generate, fetcher=fetch_page, stop_before_generation=False):
     """Сохраняет в памяти возможность продолжить генерацию после выбора спорных значений."""
     from langgraph.checkpoint.memory import InMemorySaver
     from uuid import uuid4
 
-    return {"graph": build_graph(settings, generator=generator, fetcher=fetcher, checkpointer=InMemorySaver()),
+    return {"graph": build_graph(settings, generator=generator, fetcher=fetcher, checkpointer=InMemorySaver(),
+                                  interrupt_before=["generate"] if stop_before_generation else None),
+            "preview": stop_before_generation,
             "config": {"configurable": {"thread_id": uuid4().hex}}}
 
 
@@ -173,6 +175,8 @@ def resume_review(session, state, payload):
         raise InputError("Данные изменились или выбор уже сохранён. Начните подготовку карточки заново.")
     decision = validate_decision(snapshot.values, payload)
     result = session["graph"].invoke(Command(resume=decision), session["config"])
+    if session.get("preview") and result.get("status") == "pending":
+        result["status"] = "preview"
     if state.get("demonstration"):
         result["demonstration"] = state["demonstration"]
         result["warnings"] = list(state.get("warnings", []))

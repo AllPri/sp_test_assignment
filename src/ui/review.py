@@ -16,15 +16,18 @@ def option_label(task, index):
     return origin + ": " + choice["value"]
 
 
-def render_review(state, session=None, *, stale=False):
+def render_review(state, session=None, *, stale=False, on_resolved=None):
     """Запрашивает выбор до генерации; при согласованных данных вообще не показывает форму."""
     tasks = build_review_guide(state)
     if not tasks or state.get("status") != "awaiting_resolution":
         return
     st.subheader("Выберите правильные значения")
-    st.write("Локальные данные отличаются от сайта. Выберите значение для каждого параметра — затем карточка сформируется автоматически.")
+    preview = bool(session and session.get("preview"))
+    st.write("Локальные данные отличаются от сайта. Выберите значение для каждого параметра.")
+    if preview:
+        st.caption("Проверка продолжится без обращения к модели. Будут показаны выбранные факты.")
     if session is None:
-        st.caption("Чтобы сделать выбор, подставьте этот сценарий в редактор и начните подготовку карточки.")
+        st.caption("Запустите подготовку карточки или проверку сценария заново, чтобы открыть варианты выбора.")
         return
     if stale:
         st.warning("Исходные данные изменены. Нажмите «Сформировать черновик» ещё раз.")
@@ -53,11 +56,15 @@ def render_review(state, session=None, *, stale=False):
                     for choice in task["choices"]:
                         st.caption(choice["source"])
                         st.write(choice.get("excerpt") or choice["value"])
-        submitted = st.form_submit_button("Применить выбор и сформировать карточку", type="primary")
+        submitted = st.form_submit_button("Применить выбор (без модели)" if preview else "Применить выбор и сформировать карточку", type="primary")
     if submitted:
         try:
-            with st.spinner("Готовим карточку с выбранными значениями…"):
-                st.session_state.result = resume_review(session, state, {"choices": answers})
+            with st.spinner("Проверяем выбранные значения…" if preview else "Готовим карточку с выбранными значениями…"):
+                result = resume_review(session, state, {"choices": answers})
+                if on_resolved:
+                    on_resolved(result)
+                else:
+                    st.session_state.result = result
             st.rerun()
         except InputError as exc:
             st.error(str(exc))

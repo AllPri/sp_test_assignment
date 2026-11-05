@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from ..demo.scenarios import load_scenarios, preview_scenario
+from ..demo.scenarios import create_preview_session, load_scenarios, preview_scenario
 from .results import render_result
 
 
@@ -13,6 +13,10 @@ def apply_scenario(scenario_id):
     st.session_state.enrich_enabled = scenario.enrich
     st.session_state.demo_scenario_id = scenario_id
     st.session_state.pop("result", None)
+    st.session_state.pop("review_session", None)
+    st.session_state.pop("result_signature", None)
+    st.session_state.workspace_tab = "Карточка товара"
+    st.session_state.scenario_notice = f"Сценарий «{scenario.title}» подставлен в редактор. Можно проверить JSON и сформировать черновик."
 
 
 def clear_scenario():
@@ -38,9 +42,16 @@ def render_scenarios():
             st.code((FOLDER / scenario.source_html).read_text(encoding="utf-8"), language="html")
     if st.button("Проверить сценарий без модели"):
         with st.spinner("Проверяем данные…"):
-            st.session_state.scenario_preview = (selected, preview_scenario(scenario))
+            session = create_preview_session(scenario)
+            st.session_state.scenario_review_session = session
+            st.session_state.scenario_preview = (selected, preview_scenario(scenario, session=session))
     st.button("Подставить в редактор", on_click=apply_scenario, args=(selected,))
-    st.caption("После подстановки откройте вкладку «Карточка товара». Генерация запускается её обычной кнопкой и использует выбранную модель.")
+    st.caption("Подстановка откроет «Карточку товара». Генерация запускается её обычной кнопкой и использует выбранную модель.")
     saved = st.session_state.get("scenario_preview")
     if saved and saved[0] == selected:
-        render_result(saved[1], key_prefix="scenario")
+        def save_preview(result):
+            """Обновляет только результат сценария, сохраняя рабочую карточку независимой."""
+            st.session_state.scenario_preview = (selected, result)
+
+        render_result(saved[1], key_prefix="scenario", review_session=st.session_state.get("scenario_review_session"),
+                      on_resolved=save_preview)
