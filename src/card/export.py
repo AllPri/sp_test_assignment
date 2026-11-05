@@ -9,6 +9,9 @@ STATUS = {
     "insufficient_data": "Недостаточно подтверждённых данных",
     "invalid_input": "Некорректные входные данные",
     "service_error": "Ошибка выбранного сервиса",
+    "preview": "Проверка данных завершена; генерация модели не запускалась",
+    "approved": "Карточка подтверждена специалистом; автоматические замечания сохранены",
+    "rejected": "Карточка отклонена специалистом",
 }
 
 
@@ -23,6 +26,9 @@ def report(state):
         "sources": facts.get("provenance", {}), "source_page": facts.get("source_page"),
         "warnings": state.get("warnings", []), "validation_issues": state.get("issues", []),
         "error": state.get("error", ""), "attempts": state.get("attempts", 0),
+        "demonstration": state.get("demonstration"),
+        "extracted_characteristics": facts.get("extracted", []),
+        "human_review": state.get("review", {"status": "not_reviewed"}),
     }
 
 
@@ -50,6 +56,11 @@ def markdown(state):
         lines += ["", "Источник: " + data["source_page"]["url"]]
     if data["error"]:
         lines += ["", "Ошибка: " + data["error"]]
+    review = data["human_review"]
+    lines += ["", "## Ручная проверка", "", "Статус: " + review["status"]]
+    if review.get("reviewer"):
+        lines += ["Специалист: " + review["reviewer"], "Дата: " + review["reviewed_at"],
+                  "Комментарий: " + review.get("comment", "")]
     return "\n".join(lines)
 
 

@@ -3,10 +3,12 @@
 import json
 import re
 
+from .claims import check_claims
+
 
 def numeric_tokens(text):
     """Находит числа и обозначения с цифрами, чтобы заметить добавленные моделью значения."""
-    return set(re.findall(r"[\w]*\d[\w.,/–—−-]*", text.casefold()))
+    return {token.rstrip(".,") for token in re.findall(r"[\w]*\d[\w.,/–—−-]*", text.casefold())}
 
 
 def validate_card(card, facts):
@@ -28,4 +30,5 @@ def validate_card(card, facts):
     added = numeric_tokens(output) - known
     if added:
         issues.append("Неподтверждённые числовые обозначения: " + ", ".join(sorted(added)))
+    issues.extend(check_claims(card, facts))
     return issues

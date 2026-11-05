@@ -1,13 +1,16 @@
-"""Собирает расширяемый граф с одной доработкой и отдельными состояниями ошибок."""
+"""Собирает граф с одной доработкой, явными ошибками и ожиданием ручной проверки специалистом."""
 
 from typing import TypedDict
+from dataclasses import asdict
 
 from .card.facts import prepare_facts
-from .models import CARD_SCHEMA, InputError, ServiceError, decode_card, parse_product
+from .card.extraction import extract_descriptions
+from .card.review import human_review_node, validate_decision
+from .models import CARD_SCHEMA, InputError, Product, ServiceError, decode_card, parse_product
 from .card.prompts import SYSTEM_PROMPT, build_prompt
 from .llm.providers import generate, validate_settings
 from .card.validation import validate_card
-from .sources.website import fetch_page
+from .sources.website import PageFacts, fetch_page
 
 
 class State(TypedDict, total=False):
@@ -15,8 +18,8 @@ class State(TypedDict, total=False):
 
     raw: str
     enrich: bool
-    product: object
-    page: object
+    product: dict
+    page: dict | None
     facts: dict
     card: dict | None
     issues: list[str]
@@ -27,6 +30,8 @@ class State(TypedDict, total=False):
     steps: list[str]
     provider: str
     model: str
+    extracted: list[dict]
+    review: dict
 
 
 class Nodes:
@@ -42,27 +47,35 @@ class Nodes:
             product = parse_product(state["raw"])
         except InputError as exc:
             return {"error": str(exc), "status": "invalid_input", "steps": ["Проверка входа"]}
-        return {"product": product, "steps": ["Проверка входа"]}
+        return {"product": asdict(product), "steps": ["Проверка входа"]}
 
     def enrich(self, state):
         """Пробует дообогащение по умолчанию, сохраняя возможность работы без сайта."""
         warnings, page = [], None
+        product = Product(**state["product"])
         if state.get("enrich", True):
-            if state["product"].url:
+            if product.url:
                 try:
-                    page = self.fetcher(state["product"])
+                    page = self.fetcher(product)
                 except ServiceError as exc:
                     warnings.append("Дообогащение не выполнено: " + str(exc))
             else:
                 warnings.append("URL не указан: дообогащение пропущено.")
         else:
             warnings.append("Дообогащение отключено пользователем.")
-        return {"page": page, "warnings": warnings,
+        return {"page": asdict(page) if page else None, "warnings": warnings,
                 "steps": [*state["steps"], "Получение источника"]}
+
+    def extract(self, state):
+        """Извлекает только явно записанные значения с дословными фрагментами источников."""
+        product, page = source_objects(state)
+        return {"extracted": extract_descriptions(product, page),
+                "steps": [*state["steps"], "Извлечение характеристик"]}
 
     def prepare(self, state):
         """Отделяет конфликты и решает, достаточно ли подтверждённых данных."""
-        facts = prepare_facts(state["product"], state.get("page"))
+        product, page = source_objects(state)
+        facts = prepare_facts(product, page, extracted=state.get("extracted"))
         return {"facts": facts, "warnings": [*state["warnings"], *facts["warnings"]],
                 "status": "pending" if facts["enough"] else "insufficient_data",
                 "steps": [*state["steps"], "Подготовка фактов"]}
@@ -73,6 +86,8 @@ class Nodes:
                    "provider": self.settings.provider, "model": self.settings.model,
                    "steps": [*state["steps"], "Генерация"]}
         try:
+            if self.generator is generate:
+                validate_settings(self.settings)
             raw = self.generator(
                 self.settings, SYSTEM_PROMPT, build_prompt(state["facts"], state.get("issues")), CARD_SCHEMA,
             )
@@ -87,11 +102,19 @@ class Nodes:
     def check(self, state):
         """Не помечает неудачную вторую попытку как успешную карточку."""
         issues = validate_card(state["card"], state["facts"]) if state.get("card") else state["issues"]
-        return {"issues": issues, "status": "needs_review" if issues else "draft",
-                "steps": [*state["steps"], "Проверка результата"]}
+        result = {"issues": issues, "status": "needs_review" if issues else "draft",
+                  "steps": [*state["steps"], "Проверка результата"]}
+        if state.get("card") and (not issues or state["attempts"] >= 2):
+            result["review"] = {"status": "pending"}
+        return result
 
 
-def build_graph(settings, *, generator=generate, fetcher=fetch_page):
+def source_objects(state):
+    """Восстанавливает объекты из простого состояния, которое безопасно сохраняется в памяти графа."""
+    return Product(**state["product"]), PageFacts(**state["page"]) if state.get("page") else None
+
+
+def build_graph(settings, *, generator=generate, fetcher=fetch_page, checkpointer=None):
     """Создаёт настоящий LangGraph; без установленных зависимостей запуск невозможен."""
     from langgraph.graph import END, START, StateGraph
 
@@ -100,16 +123,21 @@ def build_graph(settings, *, generator=generate, fetcher=fetch_page):
     for name in ("validate", "prepare", "generate", "check"):
         graph.add_node(name, getattr(nodes, name))
     graph.add_node("fetch_source", nodes.enrich)
+    graph.add_node("extract_facts", nodes.extract)
+    graph.add_node("human_review", human_review_node)
     graph.add_edge(START, "validate")
     graph.add_conditional_edges("validate", lambda s: "stop" if s.get("error") else "next",
                                 {"stop": END, "next": "fetch_source"})
-    graph.add_edge("fetch_source", "prepare")
+    graph.add_edge("fetch_source", "extract_facts")
+    graph.add_edge("extract_facts", "prepare")
     graph.add_conditional_edges("prepare", lambda s: "next" if s["facts"]["enough"] else "stop",
                                 {"stop": END, "next": "generate"})
     graph.add_conditional_edges("generate", lambda s: "stop" if s.get("error") else "next",
                                 {"stop": END, "next": "check"})
-    graph.add_conditional_edges("check", after_check, {"retry": "generate", "stop": END})
-    return graph.compile()
+    graph.add_conditional_edges("check", after_automatic_check,
+                                {"retry": "generate", "review": "human_review", "stop": END})
+    graph.add_edge("human_review", END)
+    return graph.compile(checkpointer=checkpointer)
 
 
 def after_check(state):
@@ -117,13 +145,46 @@ def after_check(state):
     return "retry" if state["issues"] and state["attempts"] < 2 else "stop"
 
 
-def run(raw, settings, enrich=True):
-    """Запускает граф без сохранения истории; доступ к провайдеру проверяет до сети."""
+def after_automatic_check(state):
+    """Передаёт сформированную карточку специалисту, а ошибку формата завершает без подтверждения."""
+    if after_check(state) == "retry":
+        return "retry"
+    return "review" if state.get("card") else "stop"
+
+
+def create_review_session(settings, *, generator=generate, fetcher=fetch_page):
+    """Создаёт изолированное продолжение графа в памяти для одной карточки браузерной сессии."""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from uuid import uuid4
+
+    return {"graph": build_graph(settings, generator=generator, fetcher=fetcher, checkpointer=InMemorySaver()),
+            "config": {"configurable": {"thread_id": uuid4().hex}}}
+
+
+def resume_review(session, state, payload):
+    """Возобновляет только ожидающий узел проверки, сохраняя пометку демонстрационных данных."""
+    from langgraph.types import Command
+    from .models import InputError
+    from .card.review import card_digest
+
+    snapshot = session["graph"].get_state(session["config"])
+    if snapshot.next != ("human_review",) or card_digest(state) != card_digest(snapshot.values):
+        raise InputError("Карточка не ожидает проверки или изменилась. Сформируйте новый черновик.")
+    decision = validate_decision(snapshot.values, payload)
+    result = session["graph"].invoke(Command(resume=decision), session["config"])
+    if state.get("demonstration"):
+        result["demonstration"] = state["demonstration"]
+        result["warnings"] = list(state.get("warnings", []))
+    return result
+
+
+def run(raw, settings, enrich=True, *, fetcher=fetch_page, session=None):
+    """Запускает граф; недостаток данных обнаруживает без ключа, а доступ проверяет перед генерацией."""
     try:
         parse_product(raw)
     except InputError as exc:
         return {"status": "invalid_input", "error": str(exc), "steps": ["Проверка входа"]}
-    validate_settings(settings)
-    graph = build_graph(settings)
+    graph = session["graph"] if session else build_graph(settings, fetcher=fetcher)
     return graph.invoke({"raw": raw, "enrich": enrich, "attempts": 0,
-                         "issues": [], "warnings": [], "error": "", "card": None})
+                         "issues": [], "warnings": [], "error": "", "card": None},
+                        session["config"] if session else None)

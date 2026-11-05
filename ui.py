@@ -6,11 +6,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 import streamlit as st
 
-from src.card.export import STATUS, json_report, markdown
 from src.models import ServiceError
-from src.llm.model_catalog import codex_models, load_models
+from src.llm.model_catalog import load_models
 from src.llm.providers import ModelSettings, PROVIDERS
-from src.workflow import run
+from src.workflow import create_review_session, run
+from src.demo.scenarios import label_result, load_scenarios
+from src.ui.results import render_result
+from src.ui.scenarios import clear_scenario, render_scenarios
 
 
 ROOT = Path(__file__).resolve().parent
@@ -44,19 +46,24 @@ def connection_settings():
 
 
 def model_selector(provider, base_url, suggestions):
-    """Показывает только список выбора и обновляет каталог по явному нажатию кнопки."""
+    """Автоматически загружает каталог один раз при готовом подключении; ошибку повторяет только по кнопке."""
     cache_key = ("model_catalog", provider, base_url.strip())
-    if provider == "Codex CLI" and cache_key not in st.session_state:
-        try:
-            st.session_state[cache_key] = codex_models()
-        except ServiceError as exc:
-            st.caption(str(exc))
-    if st.button("Обновить список моделей", key=f"refresh_{provider}"):
+    attempted_key = (*cache_key, "attempted")
+    error_key = (*cache_key, "error")
+    key_name = PROVIDERS[provider][0]
+    ready = provider == "Codex CLI" or (provider == "Локальный API" and bool(base_url.strip()))
+    ready = ready or bool(key_name and os.getenv(key_name))
+    refresh = st.button("Обновить список моделей", key=f"refresh_{provider}")
+    if refresh or (ready and attempted_key not in st.session_state):
+        st.session_state[attempted_key] = True
         try:
             with st.spinner("Получаем список моделей…"):
                 st.session_state[cache_key] = load_models(provider, base_url.strip())
+            st.session_state.pop(error_key, None)
         except ServiceError as exc:
-            st.warning(str(exc))
+            st.session_state[error_key] = str(exc)
+    if error_key in st.session_state:
+        st.warning(st.session_state[error_key])
     choices = st.session_state.get(cache_key, suggestions)
     model = st.selectbox(
         "Название модели", choices, key=f"model_{provider}_{base_url.strip()}",
@@ -65,7 +72,7 @@ def model_selector(provider, base_url, suggestions):
     if not choices:
         st.caption("Запустите сервер или настройте доступ, затем обновите список моделей.")
     elif cache_key not in st.session_state:
-        st.caption("Показаны примеры моделей. Обновите список, чтобы получить каталог вашего сервиса.")
+        st.caption("Показаны примеры моделей, а не каталог аккаунта. Настройте доступ или повторите обновление списка.")
     elif provider == "Codex CLI":
         st.caption("Список из локального кэша Codex. Он может устареть; кэш обновляет сам Codex.")
     else:
@@ -81,8 +88,12 @@ def input_editor():
         st.session_state.product_json = (ROOT / "examples" / examples[selected]).read_text(encoding="utf-8")
     if st.button("Подставить выбранный пример"):
         st.session_state.product_json = (ROOT / "examples" / examples[selected]).read_text(encoding="utf-8")
+        clear_scenario()
+        st.session_state.enrich_enabled = True
     raw = st.text_area("Данные одного товара (JSON)", height=340, key="product_json")
-    enrich = st.checkbox("Дополнить данные со страницы товара", value=True)
+    if "enrich_enabled" not in st.session_state:
+        st.session_state.enrich_enabled = True
+    enrich = st.checkbox("Дополнить данные со страницы товара", key="enrich_enabled")
     st.caption(
         "При включении загружается URL из JSON на souz-pribor.ru. Источники и добавленные сведения "
         "появятся в результате. При недоступности сайта используются исходные данные."
@@ -90,90 +101,30 @@ def input_editor():
     return raw, enrich
 
 
-def render_sources(state):
-    """Выводит конфликты отдельно и показывает происхождение допущенных характеристик."""
-    facts = state.get("facts", {})
-    for warning in state.get("warnings", []):
-        st.warning(warning)
-    if facts.get("conflicts"):
-        st.error("Обнаружены конфликты. Спорные характеристики исключены из генерации.")
-        rows = [{"Характеристика": c["field"], "Значение": v["value"], "Источник": v["source"]}
-                for c in facts["conflicts"] for v in c["values"]]
-        st.dataframe(rows, hide_index=True, use_container_width=True)
-    if facts.get("missing"):
-        st.subheader("Нужно уточнить")
-        for value in facts["missing"]:
-            st.write("• " + value)
-    with st.expander("Источники и дообогащение", expanded=False):
-        page = facts.get("source_page")
-        if page:
-            st.write("Страница: " + page["url"])
-            st.write("Заголовок: " + page["title"])
-        if facts.get("added"):
-            st.dataframe([
-                {"Поле": item["field"], "Добавленные сведения": item["value"], "Источник": item["source"]}
-                for item in facts["added"]
-            ], hide_index=True, use_container_width=True)
-        else:
-            st.write("Сведения со страницы не добавлены.")
-        for name, sources in facts.get("provenance", {}).items():
-            st.write(name)
-            for source in sources:
-                st.caption(source["source"] + " — " + source["excerpt"])
-
-
-def render_result(state):
-    """Показывает статус и сохраняет предупреждения во всех экспортируемых форматах."""
-    st.divider()
-    st.subheader("Результат")
-    st.info(STATUS.get(state.get("status"), "Обработка не завершена"))
-    if state.get("error"):
-        st.error(state["error"])
-    render_sources(state)
-    card = state.get("card")
-    if card:
-        st.subheader(card["seo_title"])
-        left, right = st.columns(2)
-        left.metric("Символов в заголовке", len(card["seo_title"]), help="Не более 70")
-        right.metric("Символов в описании", len(card["seo_description"]), help="800–1200 с пробелами")
-        st.write(card["seo_description"])
-        st.subheader("Характеристики")
-        st.table([{"Характеристика": k, "Значение": v} for k, v in state["facts"]["specs"].items()])
-        st.subheader("Для менеджера")
-        st.write(card["commercial"])
-        st.subheader("Рекомендуемые поисковые запросы")
-        for query in card["search_queries"]:
-            st.write("• " + query)
-        st.caption("Популярность запросов не проверялась. Перед публикацией проверьте все факты.")
-    for issue in state.get("issues", []):
-        st.error(issue)
-    if state.get("provider"):
-        st.caption(f"{state['provider']} · {state['model']} · обращений к модели: {state.get('attempts', 0)}")
-    text, data = markdown(state), json_report(state)
-    md_tab, json_tab = st.tabs(["Markdown для копирования", "JSON для копирования"])
-    with md_tab:
-        st.code(text, language="markdown")
-        st.download_button("Скачать Markdown", text, "product-card.md", "text/markdown")
-    with json_tab:
-        st.code(data, language="json")
-        st.download_button("Скачать JSON", data, "product-card.json", "application/json")
-    with st.expander("Пройденные шаги графа"):
-        st.write(" → ".join(state.get("steps", [])))
-
-
-def main():
-    """Генерирует карточку только по кнопке; изменения виджетов не вызывают модель."""
-    st.set_page_config(page_title="Черновик карточки товара", page_icon="📝", layout="wide")
-    st.title("Черновик карточки товара")
-    st.write("Передайте сведения о приборе, выберите модель и получите текст для проверки контент-менеджером.")
-    settings = connection_settings()
+def render_editor(settings):
+    """Применяет демонстрационный источник только при явном выборе сценария."""
+    scenario_id = st.session_state.get("demo_scenario_id")
+    scenario = load_scenarios().get(scenario_id)
+    if scenario:
+        st.warning("ДЕМОНСТРАЦИОННЫЕ ДАННЫЕ: " + scenario.title + ". Вместо сайта используется локальный источник.")
+        st.button("Отключить демонстрационный режим", on_click=clear_scenario)
     raw, enrich = input_editor()
-    signature = (raw, enrich, settings)
+    # Выбор обычного примера может отключить демонстрацию в текущем обновлении.
+    scenario = load_scenarios().get(st.session_state.get("demo_scenario_id"))
+    signature = (raw, enrich, settings, scenario.id if scenario else None)
     if st.button("Сформировать черновик", type="primary"):
         st.session_state.pop("result", None)
+        st.session_state.pop("review_session", None)
         try:
             with st.spinner("Получаем факты и готовим карточку…"):
-                st.session_state.result = run(raw, settings, enrich)
+                if scenario:
+                    session = create_review_session(settings, fetcher=scenario.fetch)
+                    result = run(raw, settings, enrich, fetcher=scenario.fetch, session=session)
+                    st.session_state.result = label_result(result, scenario)
+                else:
+                    session = create_review_session(settings)
+                    st.session_state.result = run(raw, settings, enrich, session=session)
+                st.session_state.review_session = session
             st.session_state.result_signature = signature
         except ServiceError as exc:
             st.error(str(exc))
@@ -182,9 +133,23 @@ def main():
         except Exception:
             st.error("Внутренняя ошибка приложения. Результат не считается проверенным.")
     if "result" in st.session_state:
-        if signature != st.session_state.get("result_signature"):
+        stale = signature != st.session_state.get("result_signature")
+        if stale:
             st.warning("Настройки или вход изменены. Ниже показан предыдущий результат; нажмите кнопку для обновления.")
-        render_result(st.session_state.result)
+        render_result(st.session_state.result, review_session=st.session_state.get("review_session"), stale=stale)
+
+
+def main():
+    """Разделяет рабочий редактор и воспроизводимые сценарии; сам выбор вкладки модель не вызывает."""
+    st.set_page_config(page_title="Черновик карточки товара", page_icon="📝", layout="wide")
+    st.title("Черновик карточки товара")
+    st.write("Передайте сведения о приборе, выберите модель и получите текст для проверки контент-менеджером.")
+    settings = connection_settings()
+    editor, scenarios = st.tabs(["Карточка товара", "Примеры сценариев"])
+    with editor:
+        render_editor(settings)
+    with scenarios:
+        render_scenarios()
 
 
 if __name__ == "__main__":

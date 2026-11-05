@@ -51,7 +51,7 @@ class ConflictTests(unittest.TestCase):
         self.assertNotIn("RS-232", prompt)
         self.assertNotIn("RS-485", prompt)
         self.assertEqual(len(facts["conflicts"]), 1)
-        self.assertEqual(len(facts["conflicts"][0]["values"]), 2)
+        self.assertEqual({v["value"] for v in facts["conflicts"][0]["values"]}, {"RS-232", "RS-485"})
         state = {"status": "insufficient_data", "facts": facts}
         for output in (markdown(state), json_report(state)):
             self.assertIn("RS-232", output)

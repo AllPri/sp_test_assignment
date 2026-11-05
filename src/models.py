@@ -25,12 +25,24 @@ class Product:
     product_code: str = ""
 
 
+def unique_object(pairs):
+    """Отклоняет повторные ключи JSON до того, как одно значение затрёт другое."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise InputError(f"Повторный ключ JSON: {key}.")
+        result[key] = value
+    return result
+
+
 def parse_product(raw: str) -> Product:
     """Проверяет JSON до сетевых запросов, не подменяя неверные типы значениями по умолчанию."""
     if len(raw) > 60_000:
         raise InputError("Входной JSON слишком большой: максимум 60 000 символов.")
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=unique_object)
+    except InputError:
+        raise
     except (ValueError, RecursionError) as exc:
         raise InputError("Некорректный JSON. Проверьте кавычки, запятые и скобки.") from exc
     if not isinstance(data, dict):
@@ -54,7 +66,10 @@ def parse_product(raw: str) -> Product:
             raise InputError("Характеристика должна иметь непустое имя и строковое или числовое значение.")
         if isinstance(value, float) and not math.isfinite(value):
             raise InputError("Значение характеристики должно быть конечным числом.")
-        clean[key.strip()] = str(value).strip()
+        name = key.strip()
+        if name in clean:
+            raise InputError(f"Повторная характеристика после удаления пробелов: {name}.")
+        clean[name] = str(value).strip()
     return Product(**{**data, "specs": clean})
 
 
