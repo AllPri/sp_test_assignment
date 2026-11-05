@@ -23,7 +23,8 @@ def connection_settings():
     """Позволяет выбрать провайдера и модель без сохранения настроек и ключей в файлы."""
     with st.sidebar:
         st.header("Подключение модели")
-        provider = st.selectbox("Способ подключения", list(PROVIDERS))
+        provider = st.selectbox("Способ подключения", list(PROVIDERS),
+                                index=list(PROVIDERS).index("Codex CLI"), key="provider")
         key_name, default_url, suggestions = PROVIDERS[provider]
         base_url = ""
         if provider == "Локальный API":

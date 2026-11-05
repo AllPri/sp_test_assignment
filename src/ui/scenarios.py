@@ -29,7 +29,8 @@ def render_scenarios():
     st.subheader("Примеры сценариев")
     st.info("Демонстрационные данные: вымышленные приборы и локальные HTML-страницы. Сайт заказчика не запрашивается.")
     scenarios = load_scenarios()
-    selected = st.selectbox("Сценарий", list(scenarios), format_func=lambda key: scenarios[key].title)
+    selected = st.selectbox("Сценарий", list(scenarios), index=list(scenarios).index("conflict"),
+                            format_func=lambda key: scenarios[key].title)
     scenario = scenarios[selected]
     st.write(scenario.explanation)
     st.write("Ожидаемая реакция: " + scenario.expected)

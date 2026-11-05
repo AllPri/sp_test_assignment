@@ -25,7 +25,9 @@ class UITests(unittest.TestCase):
         """Загружает полный подставной каталог автоматически и повторяет запрос только по кнопке."""
         from streamlit.testing.v1 import AppTest
 
-        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py"))
+        app.session_state["provider"] = "OpenAI"
+        app.run(timeout=5)
         self.assertFalse(app.exception)
         models = next(box for box in app.selectbox if box.label == "Название модели")
         self.assertEqual(models.options, ["gpt-a", "gpt-b"])
@@ -47,7 +49,9 @@ class UITests(unittest.TestCase):
         from src.models import ServiceError
 
         catalog.side_effect = ServiceError("Каталог недоступен")
-        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py"))
+        app.session_state["provider"] = "OpenAI"
+        app.run(timeout=5)
         app.run(timeout=5)
         self.assertFalse(app.exception)
         self.assertEqual(catalog.call_count, 1)
@@ -61,7 +65,9 @@ class UITests(unittest.TestCase):
         """Без доступа сохраняет подписанный список примеров и не выполняет сетевой запрос."""
         from streamlit.testing.v1 import AppTest
 
-        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py"))
+        app.session_state["provider"] = "OpenAI"
+        app.run(timeout=5)
         self.assertFalse(app.exception)
         catalog.assert_not_called()
 
@@ -71,6 +77,8 @@ class UITests(unittest.TestCase):
 
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
         self.assertFalse(app.exception)
+        self.assertEqual(next(box for box in app.selectbox if box.label == "Способ подключения").value, "Codex CLI")
+        self.assertEqual(next(box for box in app.selectbox if box.label == "Сценарий").value, "conflict")
         self.assertTrue(app.checkbox[0].value)
         self.assertIn("МК110", app.text_area[0].value)
         self.assertTrue(any(box.label == "Название модели" for box in app.selectbox))
