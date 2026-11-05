@@ -8,7 +8,7 @@ from .card.extraction import extract_descriptions
 from .card.review import human_review_node, validate_decision
 from .card.review_guide import build_review_guide
 from .models import CARD_SCHEMA, InputError, Product, ServiceError, decode_card, parse_product
-from .card.prompts import SYSTEM_PROMPT, build_prompt
+from .card.prompts import load_system_prompt, build_prompt
 from .llm.providers import generate, validate_settings
 from .card.validation import validate_card
 from .sources.website import PageFacts, fetch_page
@@ -92,7 +92,7 @@ class Nodes:
             if self.generator is generate:
                 validate_settings(self.settings)
             raw = self.generator(
-                self.settings, SYSTEM_PROMPT, build_prompt(state["facts"], state.get("issues")), CARD_SCHEMA,
+                self.settings, load_system_prompt(), build_prompt(state["facts"], state.get("issues")), CARD_SCHEMA,
             )
             updates["card"] = decode_card(raw)
             updates["issues"] = []
