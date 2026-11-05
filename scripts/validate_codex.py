@@ -33,6 +33,9 @@ def cases():
 
 def case_passed(name, state):
     """Проверяет контракт сценария; недостаточный объём текста допустим только с явным статусом проверки."""
+    if name == "conflict":
+        return (state["status"] == "awaiting_resolution" and state.get("attempts", 0) == 0
+                and bool(state.get("facts", {}).get("conflicts")))
     if name == "insufficient":
         return state["status"] == "insufficient_data" and state.get("attempts", 0) == 0
     if name == "invalid_json":

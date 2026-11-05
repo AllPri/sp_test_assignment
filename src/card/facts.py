@@ -1,10 +1,27 @@
 """Объединяет подтверждённые факты и отделяет конфликты от данных для модели."""
 
 from dataclasses import asdict
+from copy import deepcopy
 import re
 
 from .extraction import extract_descriptions
 from .normalization import comparable, field_key
+
+
+def assess_content(specs, descriptions):
+    """Оценивает достаточность фактов одинаково до и после выбора человеком."""
+    useful_description = any(
+        len(item["text"].split()) >= 6 and re.search(
+            r"предназнач|измер|контрол|сбор|сбора|обмен|передач|регулир", item["text"], re.I)
+        for item in descriptions)
+    metadata = {"артикул", "кодтовара", "sku", "vendorcode", "цена", "наличие"}
+    usable = {k: v for k, v in specs.items() if v != "данных нет" and field_key(k) not in metadata}
+    missing = []
+    if not useful_description:
+        missing.append("Подтверждённое описание назначения")
+    if not usable:
+        missing.append("Ключевые технические характеристики")
+    return missing, len(usable) >= 2 or (useful_description and bool(usable))
 
 
 def prepare_facts(product, page=None, *, extracted=None):
@@ -19,16 +36,21 @@ def prepare_facts(product, page=None, *, extracted=None):
     for fact in extracted:
         groups.setdefault(field_key(fact["name"]), []).append(
             (fact["name"], fact["value"], fact["source"], fact["excerpt"]))
-    specs, conflicts, added, provenance, missing = {}, list(page.conflicts) if page else [], [], {}, []
+    specs, conflicts, added, provenance, missing = {}, deepcopy(page.conflicts) if page else [], [], {}, []
     blocked = {field_key(c["field"]) for c in conflicts}
     for key, entries in groups.items():
         if key in blocked:
+            for conflict in conflicts:
+                if field_key(conflict["field"]) == key:
+                    conflict["values"] = [*conflict["values"], *[
+                        {"field": n, "value": v, "source": s, "excerpt": e} for n, v, s, e in entries
+                        if s.startswith("Входной JSON") and v.strip()]]
             missing.append(entries[0][0] + " — конфликт на странице")
             continue
         populated = [(n, v, s, e) for n, v, s, e in entries if v.strip()]
         if len({comparable(n, v) for n, v, _, _ in populated}) > 1:
             conflicts.append({"field": entries[0][0], "values": [
-                {"value": v, "source": s, "excerpt": e} for _, v, s, e in populated
+                {"field": n, "value": v, "source": s, "excerpt": e} for n, v, s, e in populated
             ]})
             missing.append(entries[0][0] + " — конфликт значений")
             continue
@@ -54,17 +76,8 @@ def prepare_facts(product, page=None, *, extracted=None):
         if page and page.description:
             descriptions.append({"source": page.url, "text": page.description})
             added.append({"field": "Описание", "value": page.description, "source": page.url})
-    useful_description = any(
-        len(item["text"].split()) >= 6 and re.search(
-            r"предназнач|измер|контрол|сбор|сбора|обмен|передач|регулир", item["text"], re.I)
-        for item in descriptions)
-    if not useful_description:
-        missing.append("Подтверждённое описание назначения")
-    metadata = {"артикул", "кодтовара", "sku", "vendorcode", "цена", "наличие"}
-    usable = {k: v for k, v in specs.items() if v != "данных нет" and field_key(k) not in metadata}
-    if not usable:
-        missing.append("Ключевые технические характеристики")
-    enough = len(usable) >= 2 or (useful_description and bool(usable))
+    content_missing, enough = assess_content(specs, descriptions)
+    missing.extend(content_missing)
     return {
         "name": product.name, "manufacturer": product.manufacturer or "данных нет",
         "specs": specs, "descriptions": descriptions, "missing": missing,

@@ -24,7 +24,7 @@ class ScenarioTests(unittest.TestCase):
     @patch("src.transport.request_bytes", side_effect=AssertionError("Сетевой запрос запрещён"))
     def test_all_previews_without_network_or_model(self, request):
         """Все примеры завершают проверку до генерации и не требуют ключей."""
-        statuses = {"insufficient": "insufficient_data", "invalid_json": "invalid_input"}
+        statuses = {"insufficient": "insufficient_data", "invalid_json": "invalid_input", "conflict": "awaiting_resolution"}
         for key, scenario in self.scenarios.items():
             with self.subTest(scenario=key):
                 state = preview_scenario(scenario)

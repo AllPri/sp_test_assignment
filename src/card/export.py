@@ -2,10 +2,13 @@
 
 import json
 
+from .review_guide import build_review_guide
+
 
 STATUS = {
-    "draft": "Черновик: формальные проверки пройдены, нужна проверка человеком",
-    "needs_review": "Черновик не прошёл все проверки",
+    "draft": "Черновик готов: автоматические проверки пройдены",
+    "needs_review": "Автоматическая доработка не устранила все замечания",
+    "awaiting_resolution": "Выберите значения при расхождении локальных данных с сайтом",
     "insufficient_data": "Недостаточно подтверждённых данных",
     "invalid_input": "Некорректные входные данные",
     "service_error": "Ошибка выбранного сервиса",
@@ -29,6 +32,7 @@ def report(state):
         "demonstration": state.get("demonstration"),
         "extracted_characteristics": facts.get("extracted", []),
         "human_review": state.get("review", {"status": "not_reviewed"}),
+        "review_tasks": build_review_guide(state),
     }
 
 
@@ -57,10 +61,22 @@ def markdown(state):
     if data["error"]:
         lines += ["", "Ошибка: " + data["error"]]
     review = data["human_review"]
-    lines += ["", "## Ручная проверка", "", "Статус: " + review["status"]]
+    if review["status"] not in ("not_reviewed", "not_required"):
+        lines += ["", "## Выбор значений при расхождении", "", "Статус: " + review["status"]]
+    if review.get("resolved_at"):
+        lines += ["Дата: " + review["resolved_at"]]
+        lines += [f"- {r['field']}: {r['value']} ({r['source']})" for r in review.get("resolutions", [])]
     if review.get("reviewer"):
         lines += ["Специалист: " + review["reviewer"], "Дата: " + review["reviewed_at"],
                   "Комментарий: " + review.get("comment", "")]
+    if data["review_tasks"]:
+        lines += ["", "## Расхождения между локальными данными и сайтом", ""]
+        for index, task in enumerate(data["review_tasks"], 1):
+            lines += [f"{index}. {task['title']}", "Вопрос: " + task["question"]]
+            lines += ["Где: " + item["section"] + " — " + item["excerpt"] for item in task["locations"]]
+            lines += ["Источник: " + item.get("field", "") + " = " + item.get("value", "")
+                      + " (" + item.get("source", "") + ")" for item in task["sources"]]
+            lines += ["Действие: " + task["action"], ""]
     return "\n".join(lines)
 
 

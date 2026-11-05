@@ -90,13 +90,13 @@ def input_editor():
         st.session_state.product_json = (ROOT / "examples" / examples[selected]).read_text(encoding="utf-8")
         clear_scenario()
         st.session_state.enrich_enabled = True
-    raw = st.text_area("Данные одного товара (JSON)", height=340, key="product_json")
+    with st.expander("Исходные данные товара (JSON)", expanded="result" not in st.session_state):
+        raw = st.text_area("Данные одного товара (JSON)", height=260, key="product_json")
     if "enrich_enabled" not in st.session_state:
         st.session_state.enrich_enabled = True
     enrich = st.checkbox("Дополнить данные со страницы товара", key="enrich_enabled")
     st.caption(
-        "При включении загружается URL из JSON на souz-pribor.ru. Источники и добавленные сведения "
-        "появятся в результате. При недоступности сайта используются исходные данные."
+        "Если значения JSON и сайта различаются, предложим выбрать правильное перед генерацией."
     )
     return raw, enrich
 

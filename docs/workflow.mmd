@@ -16,16 +16,17 @@ graph TD;
 	__start__ --> validate;
 	check -. &nbsp;stop&nbsp; .-> __end__;
 	check -. &nbsp;retry&nbsp; .-> generate;
-	check -. &nbsp;review&nbsp; .-> human_review;
 	extract_facts --> prepare;
 	fetch_source --> extract_facts;
 	generate -. &nbsp;stop&nbsp; .-> __end__;
 	generate -. &nbsp;next&nbsp; .-> check;
+	human_review -. &nbsp;stop&nbsp; .-> __end__;
+	human_review -. &nbsp;next&nbsp; .-> generate;
 	prepare -. &nbsp;stop&nbsp; .-> __end__;
 	prepare -. &nbsp;next&nbsp; .-> generate;
+	prepare -. &nbsp;review&nbsp; .-> human_review;
 	validate -. &nbsp;stop&nbsp; .-> __end__;
 	validate -. &nbsp;next&nbsp; .-> fetch_source;
-	human_review --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

@@ -111,7 +111,7 @@ class UITests(unittest.TestCase):
         next(button for button in app.button if button.label == "Проверить сценарий без модели").click()
         app.run(timeout=5)
         self.assertFalse(app.exception)
-        self.assertTrue(any("Обнаружены конфликты" in error.value for error in app.error))
+        self.assertEqual(app.session_state["scenario_preview"][1]["status"], "awaiting_resolution")
         self.assertEqual(app.session_state["scenario_preview"][1]["attempts"], 0)
         next(button for button in app.button if button.label == "Подставить в редактор").click()
         app.run(timeout=5)
@@ -129,8 +129,8 @@ class UITests(unittest.TestCase):
         with self.assertRaises(KeyError):
             app.session_state["demo_scenario_id"]
 
-    def test_specialist_form_resumes_graph_without_generation(self):
-        """Решение формы отражается в экспорте и не вызывает модель ещё раз."""
+    def test_clean_result_requires_no_operator(self):
+        """Карточка без расхождений готова без имени, комментария и кнопки подтверждения."""
         from streamlit.testing.v1 import AppTest
         from src.workflow import create_review_session
         from src.llm.providers import ModelSettings
@@ -146,13 +146,68 @@ class UITests(unittest.TestCase):
             next(button for button in app.button if button.label == "Сформировать черновик").click()
             app.run(timeout=5)
             self.assertFalse(app.exception)
-            self.assertEqual(app.session_state["result"]["review"]["status"], "pending")
-            next(field for field in app.text_input if field.label == "Специалист (имя)").set_value("Иванов")
-            next(button for button in app.button if button.label == "Сохранить решение специалиста").click()
+            self.assertEqual(app.session_state["result"]["review"]["status"], "not_required")
+            self.assertEqual(app.session_state["result"]["status"], "draft")
+            self.assertFalse(app.radio)
+            self.assertFalse(any(field.label == "Специалист (имя)" for field in app.text_input))
+            self.assertEqual(generator.call_count, 1)
+
+    def test_automatic_issues_do_not_create_operator_form(self):
+        """Замечания автоматики доступны в подробностях и не превращаются в анкету оператору."""
+        from streamlit.testing.v1 import AppTest
+        from src.card.validation import validate_card
+
+        card = {"seo_title": "Прибор", "seo_description": "Описание прибора для задач предприятия. " * 25,
+                "search_queries": ["прибор", "выбор прибора", "заказать прибор"], "commercial": "Питание 50 В."}
+        facts = {"name": "Прибор", "manufacturer": "Завод", "specs": {"Питание": "24 В"},
+                 "provenance": {"Питание": [{"source": "Паспорт", "excerpt": "Питание: 24 В"}]},
+                 "descriptions": [], "missing": [], "conflicts": []}
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
+        app.session_state["result"] = {"status": "needs_review", "card": card, "facts": facts,
+                                      "issues": validate_card(card, facts)}
+        app.run(timeout=5)
+        self.assertFalse(app.exception)
+        text = "\n".join(item.value for item in app.markdown)
+        code = "\n".join(item.value for item in app.code)
+        self.assertNotIn("Вопрос специалисту:", text)
+        self.assertFalse(app.radio)
+        self.assertIn("Питание 50 В", text)
+        for label in ("Замечания автоматической проверки", "Источники и дообогащение", "Скопировать или скачать результат"):
+            self.assertFalse(next(expander for expander in app.expander if expander.label == label).proto.expanded)
+
+    def test_conflict_has_separate_choice_and_applies_selected_value(self):
+        """Оператор выбирает готовый вариант; этот выбор применяется перед единственным вызовом модели."""
+        from streamlit.testing.v1 import AppTest
+        from src.workflow import create_review_session
+        from src.llm.providers import ModelSettings
+        from src.sources.website import PageFacts
+
+        url = "https://www.souz-pribor.ru/product/test/"
+        raw = json.dumps({"name": "Прибор", "url": url,
+                          "specs": {"Питание": "24 В", "Интерфейс": "RS-485", "Степень защиты": "IP20"}})
+        generator = Mock(return_value=json.dumps({
+            "seo_title": "Прибор", "seo_description": "Описание прибора для задач предприятия. " * 25,
+            "search_queries": ["прибор", "выбор прибора", "заказать прибор"], "commercial": "Для задач предприятия.",
+        }))
+        session = create_review_session(ModelSettings("Локальный API", "test"), generator=generator,
+                                        fetcher=Mock(return_value=PageFacts(url, specs={"Питание": "220 В"})))
+        with patch("src.workflow.create_review_session", return_value=session):
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "ui.py")).run(timeout=5)
+            app.text_area[0].set_value(raw)
+            next(button for button in app.button if button.label == "Сформировать черновик").click()
             app.run(timeout=5)
             self.assertFalse(app.exception)
-            self.assertEqual(app.session_state["result"]["status"], "approved")
+            generator.assert_not_called()
+            self.assertEqual(app.session_state["result"]["status"], "awaiting_resolution")
+            self.assertIsNone(app.radio[0].value)
+            app.radio[0].set_value(1)
+            next(button for button in app.button if button.label == "Применить выбор и сформировать карточку").click()
+            app.run(timeout=5)
+            self.assertFalse(app.exception)
+            self.assertEqual(app.session_state["result"]["facts"]["specs"]["Питание"], "220 В")
+            self.assertEqual(app.session_state["result"]["status"], "draft")
             self.assertEqual(generator.call_count, 1)
+            self.assertFalse(app.radio)
 
 
 if __name__ == "__main__":

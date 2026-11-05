@@ -1,4 +1,4 @@
-"""Собирает граф с одной доработкой, явными ошибками и ожиданием ручной проверки специалистом."""
+"""Готовит карточку автоматически, запрашивая человека только при расхождении JSON и сайта."""
 
 from typing import TypedDict
 from dataclasses import asdict
@@ -6,6 +6,7 @@ from dataclasses import asdict
 from .card.facts import prepare_facts
 from .card.extraction import extract_descriptions
 from .card.review import human_review_node, validate_decision
+from .card.review_guide import build_review_guide
 from .models import CARD_SCHEMA, InputError, Product, ServiceError, decode_card, parse_product
 from .card.prompts import SYSTEM_PROMPT, build_prompt
 from .llm.providers import generate, validate_settings
@@ -76,8 +77,10 @@ class Nodes:
         """Отделяет конфликты и решает, достаточно ли подтверждённых данных."""
         product, page = source_objects(state)
         facts = prepare_facts(product, page, extracted=state.get("extracted"))
+        needs_choice = bool(build_review_guide({"facts": facts}))
         return {"facts": facts, "warnings": [*state["warnings"], *facts["warnings"]],
-                "status": "pending" if facts["enough"] else "insufficient_data",
+                "status": "awaiting_resolution" if needs_choice else ("pending" if facts["enough"] else "insufficient_data"),
+                "review": {"status": "pending" if needs_choice else "not_required"},
                 "steps": [*state["steps"], "Подготовка фактов"]}
 
     def generate(self, state):
@@ -104,8 +107,6 @@ class Nodes:
         issues = validate_card(state["card"], state["facts"]) if state.get("card") else state["issues"]
         result = {"issues": issues, "status": "needs_review" if issues else "draft",
                   "steps": [*state["steps"], "Проверка результата"]}
-        if state.get("card") and (not issues or state["attempts"] >= 2):
-            result["review"] = {"status": "pending"}
         return result
 
 
@@ -130,13 +131,13 @@ def build_graph(settings, *, generator=generate, fetcher=fetch_page, checkpointe
                                 {"stop": END, "next": "fetch_source"})
     graph.add_edge("fetch_source", "extract_facts")
     graph.add_edge("extract_facts", "prepare")
-    graph.add_conditional_edges("prepare", lambda s: "next" if s["facts"]["enough"] else "stop",
-                                {"stop": END, "next": "generate"})
+    graph.add_conditional_edges("prepare", after_prepare,
+                                {"stop": END, "next": "generate", "review": "human_review"})
     graph.add_conditional_edges("generate", lambda s: "stop" if s.get("error") else "next",
                                 {"stop": END, "next": "check"})
-    graph.add_conditional_edges("check", after_automatic_check,
-                                {"retry": "generate", "review": "human_review", "stop": END})
-    graph.add_edge("human_review", END)
+    graph.add_conditional_edges("check", after_check, {"retry": "generate", "stop": END})
+    graph.add_conditional_edges("human_review", lambda s: "next" if s["facts"]["enough"] else "stop",
+                                {"next": "generate", "stop": END})
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -145,15 +146,15 @@ def after_check(state):
     return "retry" if state["issues"] and state["attempts"] < 2 else "stop"
 
 
-def after_automatic_check(state):
-    """Передаёт сформированную карточку специалисту, а ошибку формата завершает без подтверждения."""
-    if after_check(state) == "retry":
-        return "retry"
-    return "review" if state.get("card") else "stop"
+def after_prepare(state):
+    """Запрашивает выбор только при локальном расхождении с сайтом, до обращения к модели."""
+    if build_review_guide(state):
+        return "review"
+    return "next" if state["facts"]["enough"] else "stop"
 
 
 def create_review_session(settings, *, generator=generate, fetcher=fetch_page):
-    """Создаёт изолированное продолжение графа в памяти для одной карточки браузерной сессии."""
+    """Сохраняет в памяти возможность продолжить генерацию после выбора спорных значений."""
     from langgraph.checkpoint.memory import InMemorySaver
     from uuid import uuid4
 
@@ -162,14 +163,14 @@ def create_review_session(settings, *, generator=generate, fetcher=fetch_page):
 
 
 def resume_review(session, state, payload):
-    """Возобновляет только ожидающий узел проверки, сохраняя пометку демонстрационных данных."""
+    """Применяет ответы к ожидающим данным и продолжает генерацию с выбранными значениями."""
     from langgraph.types import Command
     from .models import InputError
-    from .card.review import card_digest
+    from .card.review import resolution_digest
 
     snapshot = session["graph"].get_state(session["config"])
-    if snapshot.next != ("human_review",) or card_digest(state) != card_digest(snapshot.values):
-        raise InputError("Карточка не ожидает проверки или изменилась. Сформируйте новый черновик.")
+    if snapshot.next != ("human_review",) or resolution_digest(state) != resolution_digest(snapshot.values):
+        raise InputError("Данные изменились или выбор уже сохранён. Начните подготовку карточки заново.")
     decision = validate_decision(snapshot.values, payload)
     result = session["graph"].invoke(Command(resume=decision), session["config"])
     if state.get("demonstration"):
